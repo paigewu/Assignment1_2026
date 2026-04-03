@@ -1,9 +1,22 @@
 from Schedulers.cosine_scheduler import CosineAnnealingLR
 from Schedulers.lambda_scheduler import LambdaLR
 from Schedulers.step_scheduler import StepLR
+from functools import partial
+import math
 
 
 # ── Scheduler factories ──────────────────────────────────────────────────────
+
+def _identity_lr_lambda(_):
+    return 1.0
+
+
+def _warmup_lr_lambda(step, learning_rate, warmup_steps=1000):
+    step = max(0, int(step))
+    warmup_steps = max(2, int(warmup_steps))
+    if step + 1 >= warmup_steps:
+        return learning_rate
+    return learning_rate * (math.log(step + 2) / math.log(warmup_steps))
 
 def cosine_scheduler(optimizer, args):
     """Cosine annealing over the full training run."""
@@ -23,8 +36,20 @@ def step_scheduler(optimizer, args):
 
 
 def lambda_scheduler(optimizer, args):
-    """LambdaLR with a constant factor of 1.0 — learning rate stays fixed."""
-    return LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+    """Warm up the learning rate to args.learning_rate over early steps."""
+    return LambdaLR(
+        optimizer,
+        lr_lambda=partial(
+            _warmup_lr_lambda,
+            learning_rate=getattr(args, "learning_rate", 1e-3),
+            warmup_steps=getattr(args, "lr_step_size", 1000),
+        ),
+    )
+
+
+def none_scheduler(optimizer, args):
+    """No-op scheduler used by the notebook's vanilla SGD recipe."""
+    return LambdaLR(optimizer, lr_lambda=_identity_lr_lambda)
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -33,4 +58,5 @@ schedulers = {
     "cosine":  cosine_scheduler,
     "step":    step_scheduler,
     "lambda":  lambda_scheduler,
+    "none":    none_scheduler,
 }
