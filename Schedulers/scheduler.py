@@ -52,6 +52,11 @@ def none_scheduler(optimizer, args):
     return LambdaLR(optimizer, lr_lambda=_identity_lr_lambda)
 
 
+def none_scheduler(optimizer, args):
+    """No-op scheduler — learning rate never changes."""
+    return LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 schedulers = {
