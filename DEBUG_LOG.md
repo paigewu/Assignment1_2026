@@ -909,7 +909,26 @@ That means the Adam path would effectively run at learning rate `1.0`, which is 
 
 In simple terms: the optimizer and scheduler were meant to work as a pair, but one half of that pair was missing.
 
-## Note About The `nan` Loss
+### 22. Adam second moment tracked gradient instead of squared gradient
+
+`Where`: [Optimizers/adam.py](Optimizers/adam.py#L69)
+
+`From`
+
+```python
+v.mul_(beta2).add_(grad, alpha=1.0 - beta2)
+```
+
+`To`
+
+```python
+v.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
+```
+
+`Why`
+
+Adam's second moment `v` is supposed to track the exponential moving average of the **squared** gradient (`grad²`), which approximates the variance. Using plain `grad` instead means `v` tracks the mean gradient rather than the variance, so the adaptive scaling that makes Adam effective is completely wrong. This causes the optimizer to take poorly-scaled steps for every parameter throughout training.
+
 
 When the notebook printed `STEP 10 loss nan`, that was not a sign of healthy learning. It meant the code had progressed further into training, but some deep learning mechanism was still mathematically wrong.
 
