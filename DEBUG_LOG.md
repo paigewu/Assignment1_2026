@@ -404,6 +404,51 @@ Using a named top-level function fixes that.
 
 In simple terms: the scheduler worked during training, but it could not be saved because anonymous functions are not safely serializable here.
 
+### 18. Training always overwrote the checkpoint, even when dev performance got worse
+
+`Where`: [TrainTools/train.py](/Users/siyiwu/Desktop/Assignment1_2026/TrainTools/train.py)
+
+`From`
+
+```python
+best_f1  = 0.0
+best_em  = 0.0
+...
+if dev_f1 < best_f1 and dev_em < best_em:
+    ...
+else:
+    patience = 0
+    best_f1  = max(best_f1, dev_f1)
+    best_em  = max(best_em, dev_em)
+
+save_checkpoint(...)
+```
+
+`To`
+
+```python
+best_f1  = -1.0
+best_em  = -1.0
+...
+improved = (dev_f1 > best_f1) or (dev_f1 == best_f1 and dev_em > best_em)
+
+if improved:
+    patience = 0
+    best_f1 = dev_f1
+    best_em = dev_em
+    save_checkpoint(...)
+elif dev_f1 < best_f1 and dev_em < best_em:
+    ...
+else:
+    patience = 0
+```
+
+`Why`
+
+The original loop saved a checkpoint at every evaluation block, even if the current model was worse than an earlier one. That means the final file on disk could easily be a weaker checkpoint than the best model seen during training.
+
+In simple terms: training kept overwriting the good model with later worse ones.
+
 ## Stage 2: Deep Learning Mechanism Fixes
 
 These changes are less about “can the notebook run?” and more about “are the deep learning components implemented correctly?”
@@ -933,3 +978,78 @@ Adam's second moment `v` is supposed to track the exponential moving average of 
 When the notebook printed `STEP 10 loss nan`, that was not a sign of healthy learning. It meant the code had progressed further into training, but some deep learning mechanism was still mathematically wrong.
 
 The strongest `nan` suspect in this repository was the dropout bug, because it could enlarge activations by a factor of `10` when `p = 0.1`. Combined with a deep architecture and attention layers, that is a plausible reason for unstable values.
+
+### 23. Preprocessing used an arbitrary answer span when multiple gold spans existed
+
+`Where`: [Tools/preproc.py](/Users/siyiwu/Desktop/Assignment1_2026/Tools/preproc.py)
+
+`From`
+
+```python
+or (ex["y2s"][0] - ex["y1s"][0]) > ans_limit
+...
+y1s.append(example["y1s"][-1])
+y2s.append(example["y2s"][-1])
+```
+
+`To`
+
+```python
+def choose_answer_span(ex):
+    spans = list(zip(ex["y1s"], ex["y2s"]))
+    if not spans:
+        return None
+    return min(spans, key=lambda t: ((t[1] - t[0] + 1), t[0]))
+...
+or (y2 - y1 + 1) > ans_limit
+...
+y1s.append(y1)
+y2s.append(y2)
+```
+
+`Why`
+
+Some SQuAD examples contain multiple gold answer spans. The original code filtered examples using one span but then trained on a different span, and that chosen target was simply the last annotation in the list. That makes supervision inconsistent and noisier than it needs to be.
+
+The fix chooses one canonical target span per example, preferring the shortest valid span and then the earliest one.
+
+In simple terms: the model was sometimes being trained against a moving answer target for the same question.
+
+### 24. Weight decay was applied too broadly across all parameter types
+
+`Where`: [TrainTools/train.py](/Users/siyiwu/Desktop/Assignment1_2026/TrainTools/train.py)
+
+`From`
+
+```python
+params    = (p for p in model.parameters() if p.requires_grad)
+optimizer = optimizers[optimizer_name](params, args)
+```
+
+`To`
+
+```python
+decay_params = []
+no_decay_params = []
+for name, p in model.named_parameters():
+    if not p.requires_grad:
+        continue
+    if p.ndim == 1 or name.endswith("bias") or "norm" in name.lower():
+        no_decay_params.append(p)
+    else:
+        decay_params.append(p)
+
+param_groups = [
+    {"params": decay_params, "weight_decay": weight_decay},
+    {"params": no_decay_params, "weight_decay": 0.0},
+]
+optimizer = optimizers[optimizer_name](param_groups, args)
+```
+
+`Why`
+
+Applying L2-style weight decay to every parameter is usually a poor fit for bias terms and normalization parameters. Those parameters control offsets and scaling rather than main weight matrices, so regularizing them the same way can hurt optimization.
+
+This change keeps weight decay on the main learned weight tensors while excluding bias and normalization parameters.
+
+In simple terms: the regularizer was penalizing some parameter types that usually should be left alone.

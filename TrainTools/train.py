@@ -138,13 +138,27 @@ def train(
     if norm_name not in normalizations:
         raise ValueError(f"Unknown norm '{norm_name}'. Available: {list(normalizations.keys())}")
 
-    params    = (p for p in model.parameters() if p.requires_grad)
-    optimizer = optimizers[optimizer_name](params, args)
+    decay_params = []
+    no_decay_params = []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if p.ndim == 1 or name.endswith("bias") or "norm" in name.lower():
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
+
+    param_groups = [
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0},
+    ]
+
+    optimizer = optimizers[optimizer_name](param_groups, args)
     scheduler = schedulers[scheduler_name](optimizer, args)
     loss_fn   = losses[loss_name]
 
-    best_f1  = 0.0
-    best_em  = 0.0
+    best_f1  = -1.0
+    best_em  = -1.0
     patience = 0
     history  = []
 
@@ -190,20 +204,23 @@ def train(
         dev_f1 = dv_metrics["f1"]
         dev_em = dv_metrics["exact_match"]
 
-        if dev_f1 < best_f1 and dev_em < best_em:
+        improved = (dev_f1 > best_f1) or (dev_f1 == best_f1 and dev_em > best_em)
+
+        if improved:
+            patience = 0
+            best_f1 = dev_f1
+            best_em = dev_em
+            save_checkpoint(
+                save_dir, ckpt_name, model, optimizer, scheduler,
+                step0 + steps_this_block, best_f1, best_em, vars(args),
+            )
+        elif dev_f1 < best_f1 and dev_em < best_em:
             patience += 1
             if patience > early_stop:
                 print("Early stopping triggered.")
                 break
         else:
             patience = 0
-            best_f1  = max(best_f1, dev_f1)
-            best_em  = max(best_em, dev_em)
-
-        save_checkpoint(
-            save_dir, ckpt_name, model, optimizer, scheduler,
-            step0 + steps_this_block, best_f1, best_em, vars(args),
-        )
 
         with open(os.path.join(log_dir, "answers.json"), "w") as f:
             json.dump(ans, f)
