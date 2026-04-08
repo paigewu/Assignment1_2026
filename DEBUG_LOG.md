@@ -449,6 +449,65 @@ The original loop saved a checkpoint at every evaluation block, even if the curr
 
 In simple terms: training kept overwriting the good model with later worse ones.
 
+### 19. Evaluation rebuilt the model from hard-coded defaults instead of the saved training config
+
+`Where`: [EvaluateTools/evaluate.py](/Users/siyiwu/Desktop/Assignment1_2026/EvaluateTools/evaluate.py)
+
+`From`
+
+```python
+args = argparse.Namespace(
+    dev_npz=dev_npz,
+    word_emb_json=word_emb_json,
+    char_emb_json=char_emb_json,
+    dev_eval_json=dev_eval_json,
+    para_limit=para_limit,
+    ques_limit=ques_limit,
+    char_limit=char_limit,
+    d_model=d_model,
+    num_heads=num_heads,
+    glove_dim=glove_dim,
+    char_dim=char_dim,
+    dropout=dropout,
+    dropout_char=dropout_char,
+    pretrained_char=pretrained_char,
+)
+...
+model = QANet(word_mat, char_mat, args)
+ckpt = torch.load(ckpt_path, ...)
+model.load_state_dict(ckpt["model_state"])
+```
+
+`To`
+
+```python
+ckpt = torch.load(ckpt_path, ...)
+saved_config = dict(ckpt.get("config", {}))
+saved_config.update({
+    "dev_npz": dev_npz,
+    "word_emb_json": word_emb_json,
+    "char_emb_json": char_emb_json,
+    "dev_eval_json": dev_eval_json,
+    "save_dir": save_dir,
+    "log_dir": log_dir,
+    "ckpt_name": ckpt_name,
+    "batch_size": batch_size,
+    "test_num_batches": test_num_batches,
+})
+args = argparse.Namespace(**saved_config)
+...
+model = QANet(word_mat, char_mat, args)
+model.load_state_dict(ckpt["model_state"])
+```
+
+`Why`
+
+The training code already saves the full resolved configuration inside each checkpoint. The original evaluation code ignored that saved config and rebuilt the model from `evaluate()` defaults instead. That can silently create the wrong model settings at evaluation time if training used non-default architecture or normalization options.
+
+The fix makes evaluation reconstruct the model from the same config that was used during training, while still allowing the eval data paths and batch controls to be updated at call time.
+
+In simple terms: evaluation now rebuilds the model the same way it was trained, instead of guessing from defaults.
+
 ## Stage 2: Deep Learning Mechanism Fixes
 
 These changes are less about “can the notebook run?” and more about “are the deep learning components implemented correctly?”

@@ -87,44 +87,44 @@ def evaluate(
     """
     os.makedirs(log_dir, exist_ok=True)
 
-    if loss_name not in losses:
-        raise ValueError(f"Unknown loss '{loss_name}'. Available: {list(losses.keys())}")
+    ckpt_path = os.path.join(save_dir, ckpt_name)
+    ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
+    saved_config = dict(ckpt.get("config", {}))
 
-    # Build a lightweight namespace so existing helpers can consume it
-    args = argparse.Namespace(
-        dev_npz=dev_npz,
-        word_emb_json=word_emb_json,
-        char_emb_json=char_emb_json,
-        dev_eval_json=dev_eval_json,
-        para_limit=para_limit,
-        ques_limit=ques_limit,
-        char_limit=char_limit,
-        d_model=d_model,
-        num_heads=num_heads,
-        glove_dim=glove_dim,
-        char_dim=char_dim,
-        dropout=dropout,
-        dropout_char=dropout_char,
-        pretrained_char=pretrained_char,
-    )
+    saved_config.update({
+        "dev_npz": dev_npz,
+        "word_emb_json": word_emb_json,
+        "char_emb_json": char_emb_json,
+        "dev_eval_json": dev_eval_json,
+        "save_dir": save_dir,
+        "log_dir": log_dir,
+        "ckpt_name": ckpt_name,
+        "batch_size": batch_size,
+        "test_num_batches": test_num_batches,
+    })
+
+    if "loss_name" not in saved_config:
+        saved_config["loss_name"] = loss_name
+
+    args = argparse.Namespace(**saved_config)
+
+    if args.loss_name not in losses:
+        raise ValueError(f"Unknown loss '{args.loss_name}'. Available: {list(losses.keys())}")
 
     word_mat, char_mat = load_word_char_mats(args)
     model = QANet(word_mat, char_mat, args).to(DEVICE)
 
     dev_eval = load_dev_eval(args)
-    dev_dataset = SQuADDataset(dev_npz)
-
-    ckpt_path = os.path.join(save_dir, ckpt_name)
-    ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
+    dev_dataset = SQuADDataset(args.dev_npz)
     model.load_state_dict(ckpt["model_state"])
 
     metrics, ans = run_eval(
         model, dev_dataset, dev_eval,
-        num_batches=test_num_batches,
-        batch_size=batch_size,
+        num_batches=args.test_num_batches,
+        batch_size=args.batch_size,
         use_random_batches=False,
         device=DEVICE,
-        loss_fn=losses[loss_name],
+        loss_fn=losses[args.loss_name],
     )
 
     with open(os.path.join(log_dir, "answers.json"), "w") as f:
