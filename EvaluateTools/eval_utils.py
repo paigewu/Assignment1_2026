@@ -104,13 +104,15 @@ def run_eval(model, dataset, eval_file, num_batches, batch_size,
         loss = loss_fn(p1, p2, y1, y2)
         losses.append(float(loss.item()))
 
-        yp1 = torch.argmax(p1, dim=1)
-        yp2 = torch.argmax(p2, dim=1)
-        yps = torch.stack([yp1, yp2], dim=1)
-        ymin, _ = torch.min(yps, dim=1)
-        ymax, _ = torch.max(yps, dim=1)
+        scores = p1.unsqueeze(2) + p2.unsqueeze(1)  # [B, L, L]
+        valid = torch.triu(torch.ones_like(scores, dtype=torch.bool))
+        scores = scores.masked_fill(~valid, float("-inf"))
+        flat_idx = scores.view(scores.size(0), -1).argmax(dim=1)
+        seq_len = p1.size(1)
+        yp1 = flat_idx // seq_len
+        yp2 = flat_idx % seq_len
 
-        answer_dict_, _ = convert_tokens(eval_file, ids.tolist(), ymin.tolist(), ymax.tolist())
+        answer_dict_, _ = convert_tokens(eval_file, ids.tolist(), yp1.tolist(), yp2.tolist())
         answer_dict.update(answer_dict_)
 
     metrics = squad_evaluate(eval_file, answer_dict)

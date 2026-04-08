@@ -1053,3 +1053,37 @@ Applying L2-style weight decay to every parameter is usually a poor fit for bias
 This change keeps weight decay on the main learned weight tensors while excluding bias and normalization parameters.
 
 In simple terms: the regularizer was penalizing some parameter types that usually should be left alone.
+
+### 25. Evaluation decoded start and end independently instead of choosing the best valid span
+
+`Where`: [EvaluateTools/eval_utils.py](/Users/siyiwu/Desktop/Assignment1_2026/EvaluateTools/eval_utils.py)
+
+`From`
+
+```python
+yp1 = torch.argmax(p1, dim=1)
+yp2 = torch.argmax(p2, dim=1)
+yps = torch.stack([yp1, yp2], dim=1)
+ymin, _ = torch.min(yps, dim=1)
+ymax, _ = torch.max(yps, dim=1)
+```
+
+`To`
+
+```python
+scores = p1.unsqueeze(2) + p2.unsqueeze(1)
+valid = torch.triu(torch.ones_like(scores, dtype=torch.bool))
+scores = scores.masked_fill(~valid, float("-inf"))
+flat_idx = scores.view(scores.size(0), -1).argmax(dim=1)
+seq_len = p1.size(1)
+yp1 = flat_idx // seq_len
+yp2 = flat_idx % seq_len
+```
+
+`Why`
+
+The original evaluation picked the best start index and best end index independently, then just reordered them if the end came before the start. That is not how span-based QA decoding is usually defined. QANet-style decoding should choose the single best valid `(start, end)` pair with the constraint `start <= end`.
+
+This change does not alter the trained model itself. It corrects how the model's start/end scores are turned into one final answer span during evaluation.
+
+In simple terms: evaluation should pick the best whole answer span, not the best start and end separately.
