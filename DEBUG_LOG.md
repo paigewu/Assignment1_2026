@@ -1087,3 +1087,95 @@ The original evaluation picked the best start index and best end index independe
 This change does not alter the trained model itself. It corrects how the model's start/end scores are turned into one final answer span during evaluation.
 
 In simple terms: evaluation should pick the best whole answer span, not the best start and end separately.
+
+## Architecture / Design Changes For Better Performance
+
+These changes are intentionally separated from Stage 1 and Stage 2. They are not being claimed as obvious bugs in the original template. Instead, they are architecture/design choices that move the implementation closer to the original QANet paper and may improve generalization.
+
+### A. Pretrained word embeddings are now frozen by default
+
+`Where`: [Models/qanet.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/qanet.py)
+
+`From`
+
+```python
+self.word_emb = nn.Embedding.from_pretrained(
+    torch.tensor(word_mat, dtype=torch.float32),
+    freeze=False
+)
+```
+
+`To`
+
+```python
+freeze_word = bool(getattr(args, "freeze_word", True))
+...
+self.word_emb = nn.Embedding.from_pretrained(
+    torch.tensor(word_mat, dtype=torch.float32),
+    freeze=freeze_word
+)
+```
+
+`Why`
+
+The original QANet setup commonly keeps pretrained GloVe embeddings fixed. Freezing them preserves the pretrained semantic space and can reduce overfitting, especially when the model is trained for relatively few steps.
+
+In simple terms: the model now treats pretrained word vectors more like a stable knowledge source than another set of weights to memorize with.
+
+### B. Context and question now share the same projection convolution
+
+`Where`: [Models/qanet.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/qanet.py)
+
+`From`
+
+```python
+self.context_conv = DepthwiseSeparableConv(...)
+self.question_conv = DepthwiseSeparableConv(...)
+...
+C = self.context_conv(C)
+Q = self.question_conv(Q)
+```
+
+`To`
+
+```python
+self.input_proj = DepthwiseSeparableConv(...)
+...
+C = self.input_proj(C)
+Q = self.input_proj(Q)
+```
+
+`Why`
+
+Sharing the same projection layer pushes context and question representations into a more aligned feature space before cross-attention. This is closer to the paper-style idea that both sequences should be encoded in a comparable way.
+
+In simple terms: context words and question words are now translated into the same “internal language” before they are compared.
+
+### C. Context and question now share the same embedding encoder block
+
+`Where`: [Models/qanet.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/qanet.py)
+
+`From`
+
+```python
+self.c_emb_enc = EncoderBlock(...)
+self.q_emb_enc = EncoderBlock(...)
+...
+Ce = self.c_emb_enc(C, cmask)
+Qe = self.q_emb_enc(Q, qmask)
+```
+
+`To`
+
+```python
+self.emb_enc = EncoderBlock(...)
+...
+Ce = self.emb_enc(C, cmask)
+Qe = self.emb_enc(Q, qmask)
+```
+
+`Why`
+
+Using one shared embedding encoder encourages context and question to be processed with the same inductive bias and reduces extra parameters that can overfit. This again moves the model closer to the original QANet design philosophy.
+
+In simple terms: the model now uses the same reader for the paragraph and the question instead of teaching two separate readers from scratch.

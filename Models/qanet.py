@@ -29,6 +29,7 @@ class QANet(nn.Module):
         len_c = int(args.para_limit)
         len_q = int(args.ques_limit)
         pretrained_char = bool(getattr(args, "pretrained_char", False))
+        freeze_word = bool(getattr(args, "freeze_word", True))
         init_name   = str(getattr(args, "init_name",   "kaiming"))
         act_name    = str(getattr(args, "activation",  "relu"))
         norm_name   = str(getattr(args, "norm_name",   "layer_norm"))
@@ -40,15 +41,13 @@ class QANet(nn.Module):
         )
         self.word_emb = nn.Embedding.from_pretrained(
             torch.tensor(word_mat, dtype=torch.float32),
-            freeze=False
+            freeze=freeze_word
         )
 
         self.emb = Embedding(d_word, d_char, dropout, dropout_char, init_name=init_name, act_name=act_name)
-        self.context_conv = DepthwiseSeparableConv(d_word + d_char, d_model, 5, init_name=init_name)
-        self.question_conv = DepthwiseSeparableConv(d_word + d_char, d_model, 5, init_name=init_name)
+        self.input_proj = DepthwiseSeparableConv(d_word + d_char, d_model, 5, init_name=init_name)
 
-        self.c_emb_enc = EncoderBlock(d_model, num_heads, dropout, conv_num=4, k=7, length=len_c, init_name=init_name, act_name=act_name, norm_name=norm_name, norm_groups=norm_groups)
-        self.q_emb_enc = EncoderBlock(d_model, num_heads, dropout, conv_num=4, k=7, length=len_q, init_name=init_name, act_name=act_name, norm_name=norm_name, norm_groups=norm_groups)
+        self.emb_enc = EncoderBlock(d_model, num_heads, dropout, conv_num=4, k=7, length=max(len_c, len_q), init_name=init_name, act_name=act_name, norm_name=norm_name, norm_groups=norm_groups)
 
         self.cq_att = CQAttention(d_model, dropout)
         self.cq_resizer = DepthwiseSeparableConv(d_model * 4, d_model, 5, init_name=init_name)
@@ -66,11 +65,11 @@ class QANet(nn.Module):
         Qw, Qc = self.word_emb(Qwid), self.char_emb(Qcid)
 
         C, Q = self.emb(Cc, Cw), self.emb(Qc, Qw)
-        C = self.context_conv(C)
-        Q = self.question_conv(Q)
+        C = self.input_proj(C)
+        Q = self.input_proj(Q)
 
-        Ce = self.c_emb_enc(C, cmask)
-        Qe = self.q_emb_enc(Q, qmask)
+        Ce = self.emb_enc(C, cmask)
+        Qe = self.emb_enc(Q, qmask)
 
         X = self.cq_att(Ce, Qe, cmask, qmask)
 
