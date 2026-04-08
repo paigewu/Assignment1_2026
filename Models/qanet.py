@@ -3,11 +3,12 @@ import copy
 import torch
 import torch.nn as nn
 
-from .conv import DepthwiseSeparableConv
+from .conv import Conv1d
 from .embedding import Embedding
 from .encoder import EncoderBlock
 from .attention import CQAttention
 from .heads import Pointer
+from .Initializations import initializations, constant_
 
 
 class QANet(nn.Module):
@@ -45,12 +46,18 @@ class QANet(nn.Module):
         )
 
         self.emb = Embedding(d_word, d_char, dropout, dropout_char, init_name=init_name, act_name=act_name)
-        self.input_proj = DepthwiseSeparableConv(d_word + d_char, d_model, 5, init_name=init_name)
+        self.input_proj = Conv1d(d_word + d_char, d_model, 1)
+        initializations[init_name](self.input_proj.weight)
+        if self.input_proj.bias is not None:
+            constant_(self.input_proj.bias, 0.0)
 
         self.emb_enc = EncoderBlock(d_model, num_heads, dropout, conv_num=4, k=7, length=max(len_c, len_q), init_name=init_name, act_name=act_name, norm_name=norm_name, norm_groups=norm_groups)
 
         self.cq_att = CQAttention(d_model, dropout)
-        self.cq_resizer = DepthwiseSeparableConv(d_model * 4, d_model, 5, init_name=init_name)
+        self.cq_resizer = Conv1d(d_model * 4, d_model, 1)
+        initializations[init_name](self.cq_resizer.weight)
+        if self.cq_resizer.bias is not None:
+            constant_(self.cq_resizer.bias, 0.0)
 
         base_enc = EncoderBlock(d_model, num_heads, dropout, conv_num=2, k=5, length=len_c, init_name=init_name, act_name=act_name, norm_name=norm_name, norm_groups=norm_groups)
         self.model_enc_blks = nn.ModuleList([copy.deepcopy(base_enc) for _ in range(7)])

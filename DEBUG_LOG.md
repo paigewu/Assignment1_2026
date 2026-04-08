@@ -81,8 +81,11 @@ schedulers = {
 `To`
 
 ```python
+def _identity_lr_lambda(_):
+    return 1.0
+
 def none_scheduler(optimizer, args):
-    return LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+    return LambdaLR(optimizer, lr_lambda=_identity_lr_lambda)
 
 
 schedulers = {
@@ -165,27 +168,39 @@ x = x.transpose(1, 2)
 
 The tensor should move from `[batch, channels, length]` to `[batch, length, channels]`. Swapping dimensions `0` and `2` moves the batch dimension into the wrong place and breaks the data layout.
 
-### 7. Character embeddings were permuted into the wrong Conv2D layout
+### 7. Character embeddings were fed through the character CNN with the wrong axis/layout
 
-`Where`: [Models/embedding.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/embedding.py#L37)
+`Where`: [Models/embedding.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/embedding.py)
 
 `From`
 
 ```python
-ch_emb = ch_emb.permute(0, 2, 1, 3)
+self.conv2d = DepthwiseSeparableConv(d_char, d_char, 5, dim=2, init_name=init_name)
+...
+ch_emb = ch_emb.permute(0, 3, 1, 2)  # [B, d_char, L, char_len]
+ch_emb = self.conv2d(ch_emb)
+ch_emb, _ = torch.max(ch_emb, dim=3)  # [B, d_char, L]
 ```
 
 `To`
 
 ```python
-ch_emb = ch_emb.permute(0, 3, 1, 2)
+self.char_conv = DepthwiseSeparableConv(d_char, d_char, 5, dim=1, init_name=init_name)
+...
+B, L, char_len, d_char = ch_emb.size()
+ch_emb = ch_emb.permute(0, 1, 3, 2).contiguous().view(B * L, d_char, char_len)
+ch_emb = self.char_conv(ch_emb)
+ch_emb, _ = torch.max(ch_emb, dim=2)
+ch_emb = ch_emb.view(B, L, d_char).permute(0, 2, 1).contiguous()
 ```
 
 `Why`
 
-The character tensor starts as `[batch, seq_len, char_len, char_dim]`, but `Conv2d` expects `[batch, channels, height, width]`. The channel dimension should be `char_dim`, not `char_len`.
+The character CNN should extract features within each token over its character sequence. The old 2D setup mixed token position and character position together, which is not the intended role of the character embedding block.
 
-In simple terms: the character tensor was being fed into the convolution sideways.
+The new version reshapes to `[B*L, d_char, char_len]` and runs a 1D convolution over characters only, one token at a time.
+
+In simple terms: the character feature extractor should read the letters inside each word, not blur together letters from neighboring words.
 
 ### 8. Custom 1D convolution unfolded the wrong dimension
 
@@ -400,7 +415,7 @@ Training saves the optimizer and scheduler state into checkpoints. Python cannot
 AttributeError: Can't pickle local object ...
 ```
 
-Using a named top-level function fixes that.
+Using a named top-level function fixes that. This entry records the final current version rather than the earlier intermediate `lambda _: 1.0` form.
 
 In simple terms: the scheduler worked during training, but it could not be saved because anonymous functions are not safely serializable here.
 
@@ -481,7 +496,7 @@ model.load_state_dict(ckpt["model_state"])
 `To`
 
 ```python
-ckpt = torch.load(ckpt_path, ...)
+ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
 saved_config = dict(ckpt.get("config", {}))
 saved_config.update({
     "dev_npz": dev_npz,
@@ -596,31 +611,40 @@ out = self.drop(out)
 
 The old code computed attention and then immediately overwrote the result with the residual tensor, effectively discarding the attention block.
 
-### 5. LayerNorm used the wrong broadcasting behavior and affine formula
+### 5. LayerNorm normalized over the wrong dimensions for sequence data
 
-`Where`: [Models/Normalizations/layernorm.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/Normalizations/layernorm.py#L34-L40)
+`Where`: [Models/Normalizations/layernorm.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/Normalizations/layernorm.py), [Models/Normalizations/normalization.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/Normalizations/normalization.py)
 
 `From`
 
 ```python
-mean = x.mean(dim=dims, keepdim=False)
-var = x.var(dim=dims, keepdim=False, unbiased=False)
+return LayerNorm([d_model, length])
 ...
-return x_norm * self.bias + self.weight
-```
-
-`To`
-
-```python
+dims = tuple(range(-n, 0))
 mean = x.mean(dim=dims, keepdim=True)
 var = x.var(dim=dims, keepdim=True, unbiased=False)
 ...
 return x_norm * self.weight + self.bias
 ```
 
+`To`
+
+```python
+return LayerNorm(d_model)
+...
+mean = x.mean(dim=1, keepdim=True)
+var = x.var(dim=1, keepdim=True, unbiased=False)
+...
+return x_norm * self.weight + self.bias
+```
+
 `Why`
 
-The normalization statistics should keep their dimensions for clean broadcasting, and the affine transformation must be `x_norm * weight + bias`, not the reverse.
+For sequence features shaped `[B, C, L]`, standard QANet/Transformer-style LayerNorm should normalize each token position independently across channels. The old version normalized over both channels and sequence length together, which changes the behavior of the model substantially.
+
+The updated version uses `LayerNorm(d_model)` and normalizes over channel dimension `C` at each position.
+
+In simple terms: each token should be normalized using its own feature vector, not using the whole sequence at once.
 
 ### 6. Dropout used the wrong scaling factor and could cause exploding activations
 
@@ -1198,7 +1222,7 @@ Q = self.question_conv(Q)
 `To`
 
 ```python
-self.input_proj = DepthwiseSeparableConv(...)
+self.input_proj = Conv1d(...)
 ...
 C = self.input_proj(C)
 Q = self.input_proj(Q)
@@ -1209,6 +1233,32 @@ Q = self.input_proj(Q)
 Sharing the same projection layer pushes context and question representations into a more aligned feature space before cross-attention. This is closer to the paper-style idea that both sequences should be encoded in a comparable way.
 
 In simple terms: context words and question words are now translated into the same “internal language” before they are compared.
+
+### B2. That shared projection path now uses `1x1` convolutions instead of kernel-5 depthwise-separable convolutions
+
+`Where`: [Models/qanet.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/qanet.py)
+
+`From`
+
+```python
+self.input_proj = DepthwiseSeparableConv(d_word + d_char, d_model, 5, ...)
+...
+self.cq_resizer = DepthwiseSeparableConv(d_model * 4, d_model, 5, ...)
+```
+
+`To`
+
+```python
+self.input_proj = Conv1d(d_word + d_char, d_model, 1)
+...
+self.cq_resizer = Conv1d(d_model * 4, d_model, 1)
+```
+
+`Why`
+
+These two layers mainly exist to project one feature dimension into another. With kernel size `5`, they were also mixing neighboring token positions, which is a heavier operation than necessary for a projection step. Using `1x1` convolutions keeps the role of these layers cleaner: they remap features at each token position, while the actual contextual mixing is still handled by the encoder and attention blocks.
+
+This is not a brand-new component like EMA. It is a refinement of an existing mechanism that moves the implementation closer to the original QANet paper, which describes immediately mapping the embedding representation to model dimension with a one-dimensional convolution.
 
 ### C. Context and question now share the same embedding encoder block
 
