@@ -726,6 +726,35 @@ attn = torch.bmm(q, k.transpose(1, 2)) * self.scale
 
 Scaled dot-product attention divides by `sqrt(d_k)`. Without this, attention scores can become too large and destabilize softmax.
 
+### 9b. Multi-head attention mask order did not match flattened head order
+
+`Where`: [Models/encoder.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/encoder.py)
+
+`From`
+
+```python
+attn_mask = mask.unsqueeze(1).expand(-1, length, -1).repeat(self.num_heads, 1, 1)
+```
+
+`To`
+
+```python
+attn_mask = (
+    mask.unsqueeze(1)
+    .unsqueeze(2)
+    .expand(batch_size, self.num_heads, length, length)
+    .reshape(batch_size * self.num_heads, length, length)
+)
+```
+
+`Why`
+
+The attention tensors `q`, `k`, and `v` are flattened in order `[b0h0, b0h1, ..., b1h0, ...]`. The old mask was repeated in a different order, so many heads could end up using the padding mask from the wrong example.
+
+The fix builds the mask in `[B, h, L, L]` form first and then reshapes it to `[B*h, L, L]`, which keeps the row ordering aligned with the flattened attention tensors.
+
+In simple terms: the model was sometimes giving an attention head the wrong example’s padding mask.
+
 ### 10. GroupNorm reshaped channels into groups in the wrong order
 
 `Where`: [Models/Normalizations/groupnorm.py](/Users/siyiwu/Desktop/Assignment1_2026/Models/Normalizations/groupnorm.py#L31)
