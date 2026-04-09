@@ -73,7 +73,7 @@ class MultiHeadAttention(nn.Module):
 
         if mask.dtype != torch.bool:
             mask = mask.bool()
-        attn_mask = mask.unsqueeze(1).expand(-1, length, -1).repeat(self.num_heads, 1, 1)  # [B*h, L, L]
+        attn_mask = mask.unsqueeze(1).expand(-1, length, -1).repeat_interleave(self.num_heads, dim=0)  # [B*h, L, L]
 
         attn = torch.bmm(q, k.transpose(1, 2)) * self.scale
         attn = mask_logits(attn, attn_mask)
