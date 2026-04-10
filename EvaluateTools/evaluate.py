@@ -52,6 +52,10 @@ def evaluate(
     dropout:        float = 0.1,
     dropout_char:   float = 0.05,
     pretrained_char: bool = False,
+    norm_name:      str   = "layer_norm",
+    norm_groups:    int   = 8,
+    activation:     str   = "relu",
+    init_name:      str   = "kaiming",
 ) -> dict:
     """Evaluate a saved QANet checkpoint on the SQuAD v1.1 dev set.
 
@@ -79,6 +83,9 @@ def evaluate(
     glove_dim, char_dim, dropout, dropout_char, pretrained_char:
         Model architecture parameters — must match the values used during
         training.
+    norm_name, norm_groups, activation, init_name:
+        Additional model-component settings that must match training when
+        evaluating mechanism-ablation checkpoints.
 
     Returns
     -------
@@ -106,6 +113,10 @@ def evaluate(
         dropout=dropout,
         dropout_char=dropout_char,
         pretrained_char=pretrained_char,
+        norm_name=norm_name,
+        norm_groups=norm_groups,
+        activation=activation,
+        init_name=init_name,
     )
 
     word_mat, char_mat = load_word_char_mats(args)
