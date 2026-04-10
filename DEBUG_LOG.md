@@ -929,7 +929,6 @@ v.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
 
 Adam's second moment `v` is supposed to track the exponential moving average of the **squared** gradient (`grad²`), which approximates the variance. Using plain `grad` instead means `v` tracks the mean gradient rather than the variance, so the adaptive scaling that makes Adam effective is completely wrong. This causes the optimizer to take poorly-scaled steps for every parameter throughout training.
 
-
 When the notebook printed `STEP 10 loss nan`, that was not a sign of healthy learning. It meant the code had progressed further into training, but some deep learning mechanism was still mathematically wrong.
 
 The strongest `nan` suspect in this repository was the dropout bug, because it could enlarge activations by a factor of `10` when `p = 0.1`. Combined with a deep architecture and attention layers, that is a plausible reason for unstable values.

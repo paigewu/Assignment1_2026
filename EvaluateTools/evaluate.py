@@ -126,7 +126,10 @@ def evaluate(
     dev_dataset = SQuADDataset(dev_npz)
 
     ckpt_path = os.path.join(save_dir, ckpt_name)
-    ckpt = torch.load(ckpt_path, map_location=DEVICE)
+    # PyTorch 2.6 changed torch.load() to default to weights_only=True.
+    # Our checkpoints intentionally include optimizer/scheduler state and config,
+    # so we need the legacy behavior when loading our own trusted files.
+    ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
     model.load_state_dict(ckpt["model_state"])
 
     metrics, ans = run_eval(
