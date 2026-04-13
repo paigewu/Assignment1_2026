@@ -203,15 +203,6 @@ def run_stage3_experiments(
         result_path = os.path.join(output_dir, f"{name}.json")
         try:
             result = train(**cfg)
-            if final_eval_batches is not None:
-                result["final_eval"] = _evaluate_checkpoint(cfg, final_eval_batches)
-            with open(result_path, "w") as f:
-                json.dump(result, f, indent=2)
-            row = _summarize_result(name, hypothesis, "ok", result)
-            if "final_eval" in result:
-                row["full_eval_f1"] = result["final_eval"]["f1"]
-                row["full_eval_em"] = result["final_eval"]["exact_match"]
-                row["full_eval_loss"] = result["final_eval"]["loss"]
         except Exception as exc:
             row = {
                 "name": name,
@@ -233,6 +224,32 @@ def run_stage3_experiments(
                 )
             print(f"Experiment failed: {name}")
             traceback.print_exc()
+            rows.append(row)
+            _write_summary_csv(rows, os.path.join(output_dir, "summary.csv"))
+            continue
+
+        status = "ok"
+        if final_eval_batches is not None:
+            try:
+                result["final_eval"] = _evaluate_checkpoint(cfg, final_eval_batches)
+            except Exception as exc:
+                status = "train_ok_eval_error"
+                result["final_eval_error"] = repr(exc)
+                result["final_eval_traceback"] = traceback.format_exc()
+                print(f"Final evaluation failed for {name}; training results were kept.")
+                traceback.print_exc()
+
+        with open(result_path, "w") as f:
+            json.dump(result, f, indent=2)
+
+        row = _summarize_result(name, hypothesis, status, result)
+        if "final_eval" in result:
+            row["full_eval_f1"] = result["final_eval"]["f1"]
+            row["full_eval_em"] = result["final_eval"]["exact_match"]
+            row["full_eval_loss"] = result["final_eval"]["loss"]
+        if "final_eval_error" in result:
+            row["final_eval_error"] = result["final_eval_error"]
+
         rows.append(row)
         _write_summary_csv(rows, os.path.join(output_dir, "summary.csv"))
 

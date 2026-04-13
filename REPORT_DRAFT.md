@@ -116,87 +116,93 @@ However, these metrics should not be overstated. The dev loss remained much high
 
 ## 5. Experimental Investigation
 
-The assignment requires at least three controlled experiments. The following experiments are suitable because they isolate specific deep learning mechanisms implemented in the repository.
+Stage 3 was designed as a compact controlled study of the corrected QANet implementation. All runs used the same mini-SQuAD preprocessing outputs, random seed `42`, batch size `8`, `3000` training steps, checkpoint interval `500`, and a monitoring protocol of `25` train batches and `25` dev batches per checkpoint. The baseline configuration used Adam, the lambda warmup scheduler, `qa_nll`, LayerNorm, dropout `0.1`, character dropout `0.05`, ReLU, and Kaiming initialization. Each ablation changed only one mechanism relative to that baseline.
 
-For fair comparison, all Stage 3 experiment runs should use the same data split, random seed, batch size, number of training steps, checkpoint interval, and monitoring protocol. The helper script `stage3_experiments.py` runs a compact controlled plan using `num_steps=3000`, `checkpoint=500`, `val_num_batches=25`, and `test_num_batches=25` by default. If you use that script, replace the placeholder table values below with the values from `_stage3_results/summary.csv`. Do not directly compare a 10,000-step baseline against 3,000-step ablations unless you explicitly label the comparison as unequal-budget.
+These experiments should be interpreted as comparative evidence rather than final benchmark results. In particular, the reported Stage 3 dev scores come from a 25-batch sampled evaluation rather than the full dev set. This makes the relative ranking of configurations informative, but it also means the exact numbers are noisier than a full-dev evaluation.
 
-### Experiment 1: Optimizer and Scheduler Choice
+### 5.1 Stage 3 Summary
 
-**Hypothesis.** Adam with warmup should converge faster and more stably than vanilla SGD because it adapts parameter-wise step sizes and avoids the unstable high effective learning rate that existed before the scheduler fix.
+Table 1 summarizes the compact Stage 3 sweep. All five runs completed successfully and none showed numerical instability or `nan` loss values.
 
-**Design.** Keep architecture, data split, batch size, seed, dropout, and evaluation protocol fixed. Compare:
-
-- `optimizer_name="sgd"`, `scheduler_name="none"`.
-- `optimizer_name="sgd_momentum"`, `scheduler_name="step"`.
-- `optimizer_name="adam"`, `scheduler_name="lambda"`.
-
-**Metrics.** Report train loss, dev loss, best dev F1, best dev EM, final learning rate, and whether `nan` or OOM occurred.
-
-**Results.**
-
-| Optimizer | Scheduler | Best dev F1 | Best dev EM | Final dev loss | Observation |
+| Experiment | Mechanism changed | Best dev F1 | Best dev EM | Final dev loss | Interpretation |
 | --- | --- | ---: | ---: | ---: | --- |
-| SGD | None | [fill in] | [fill in] | [fill in] | [fill in] |
-| SGD momentum | Step | [fill in] | [fill in] | [fill in] | [fill in] |
-| Adam | Lambda warmup | [fill in Stage 3 baseline] | [fill in] | [fill in] | Stable baseline run |
+| `baseline_adam_lambda_layernorm_dropout010` | Reference configuration | `13.6660` | `5.0` | `3.6976` | Stable baseline for comparison |
+| `optimizer_sgdmomentum_step` | Optimizer + scheduler | `8.1885` | `2.5` | `4.5129` | Worse convergence than the baseline |
+| `normalization_groupnorm` | LayerNorm -> GroupNorm | `14.9810` | `9.5` | `3.7029` | Modest improvement over baseline |
+| `dropout_zero` | Remove dropout | `28.6822` | `21.5` | `3.0501` | Strongest sampled performance |
+| `dropout_high` | Increase dropout | `5.0913` | `2.5` | `4.5232` | Clear underfitting / over-regularization |
 
-**Analysis draft.** Adam with lambda warmup is expected to be strongest because the corrected Adam implementation uses bias-corrected first and second moments, and the scheduler warms the effective learning rate to the target value. If the results show faster loss reduction or higher dev F1, this supports the hypothesis that adaptive optimization and warmup improve stability for the corrected QANet pipeline.
+The most striking pattern is that dropout strength had the largest effect under this short training budget. Removing dropout substantially improved sampled dev performance, while increasing dropout harmed both loss and F1/EM. GroupNorm produced a smaller but still consistent improvement over LayerNorm, while the SGD-momentum-plus-step variant underperformed Adam with warmup.
 
-### Experiment 2: Normalization Strategy
+### 5.2 Experiment 1: Optimizer and Scheduler Choice
 
-**Hypothesis.** LayerNorm should perform better than GroupNorm in this sequence model because it normalizes over the feature/sequence representation of each example and is commonly used with attention-based architectures. GroupNorm may still stabilize convolutional blocks, but its grouping assumption may be less aligned with token-wise attention representations.
+**Hypothesis.** Adam with the corrected lambda warmup scheduler should outperform SGD with momentum and a step scheduler, because Adam adapts learning rates per parameter and the warmup schedule avoids poor early-step behavior.
 
-**Design.** Keep optimizer as Adam, scheduler as lambda, loss as `qa_nll`, and all architecture parameters fixed. Compare:
-
-- `norm_name="layer_norm"`.
-- `norm_name="group_norm"`, with `norm_groups=8`.
-
-**Metrics.** Report best dev F1/EM, train-dev gap, and whether either normalization caused unstable loss.
+**Design.** The baseline configuration used `optimizer_name="adam"` and `scheduler_name="lambda"`. The controlled variant replaced these with `optimizer_name="sgd_momentum"` and `scheduler_name="step"` using `lr_step_size=1000` and `lr_gamma=0.5`. All other settings were unchanged.
 
 **Results.**
 
-| Normalization | Best dev F1 | Best dev EM | Train F1 | Train EM | Observation |
-| --- | ---: | ---: | ---: | ---: | --- |
-| LayerNorm | [fill in Stage 3 baseline] | [fill in] | [fill in] | [fill in] | Stable baseline run |
-| GroupNorm | [fill in] | [fill in] | [fill in] | [fill in] | [fill in] |
+| Optimizer | Scheduler | Best dev F1 | Best dev EM | Final dev loss | Final learning rate |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Adam | Lambda warmup | `13.6660` | `5.0` | `3.6976` | `8.6935e-4` |
+| SGD momentum | Step | `8.1885` | `2.5` | `4.5129` | `1.2500e-4` |
 
-**Analysis draft.** If LayerNorm achieves higher dev F1/EM, this suggests that normalizing each example over its full representation is better suited to the QANet encoder. If GroupNorm performs similarly, then the corrected implementation is robust to alternative normalization schemes.
+**Analysis.** The baseline Adam plus warmup configuration outperformed the SGD-momentum-plus-step variant on every reported dev metric. Best dev F1 dropped from `13.6660` to `8.1885`, best dev EM fell from `5.0` to `2.5`, and final dev loss increased from `3.6976` to `4.5129`. This supports the hypothesis that the corrected Adam implementation and warmup schedule are better suited to the QANet training dynamics in this short-budget setting. A likely explanation is that Adam's adaptive updates make optimization easier in the presence of stacked attention and convolution blocks, while the step schedule decayed the SGD learning rate to a relatively small final value before the model had converged.
 
-### Experiment 3: Regularization Strength Through Dropout
+### 5.3 Experiment 2: Normalization Strategy
 
-**Hypothesis.** Moderate dropout should improve generalization compared with no dropout, but overly large dropout should reduce both train and dev performance by removing too much signal. This is especially relevant because the original dropout implementation was mathematically incorrect and caused unstable activation scaling.
+**Hypothesis.** LayerNorm was initially expected to perform best because QANet is an attention-heavy sequence model, and LayerNorm is a standard choice in that setting. However, GroupNorm might still help because the encoder also relies heavily on convolutional sublayers.
 
-**Design.** Keep optimizer, scheduler, normalization, seed, and evaluation protocol fixed. Compare:
-
-- `dropout=0.0`, `dropout_char=0.0`.
-- `dropout=0.1`, `dropout_char=0.05`.
-- `dropout=0.2`, `dropout_char=0.1`.
-
-**Metrics.** Report train loss, dev loss, train-dev F1 gap, best dev F1, and best dev EM.
+**Design.** The baseline used `norm_name="layer_norm"`. The controlled variant changed only the normalization type to `norm_name="group_norm"` with `norm_groups=8`, while keeping the optimizer, scheduler, dropout, and initialization unchanged.
 
 **Results.**
 
-| Dropout | Char dropout | Best dev F1 | Best dev EM | Train-dev gap | Observation |
-| ---: | ---: | ---: | ---: | ---: | --- |
-| `0.0` | `0.0` | [fill in] | [fill in] | [fill in] | [fill in] |
-| `0.1` | `0.05` | [fill in Stage 3 baseline] | [fill in] | [fill in] | Stable baseline run |
-| `0.2` | `0.1` | [fill in] | [fill in] | [fill in] | [fill in] |
+| Normalization | Best dev F1 | Best dev EM | Final dev F1 | Final dev EM | Final dev loss |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| LayerNorm | `13.6660` | `5.0` | `11.1724` | `2.5` | `3.6976` |
+| GroupNorm | `14.9810` | `9.5` | `13.1987` | `6.0` | `3.7029` |
 
-**Analysis draft.** The main run showed a train-dev F1 gap: train monitor F1 `38.140392` versus dev monitor F1 `21.587100`. If no dropout increases training F1 but lowers dev F1, it supports the role of dropout as a regularizer. If high dropout lowers both train and dev performance, it indicates underfitting.
+**Analysis.** GroupNorm performed slightly but consistently better than LayerNorm in this sweep. Its best dev F1 improved from `13.6660` to `14.9810`, and best dev EM almost doubled from `5.0` to `9.5`. Final dev F1 and EM were also higher. The dev loss values were very close, so the main difference was in answer quality rather than a dramatic change in optimization stability. This result is interesting because it runs against the initial expectation that LayerNorm would be the natural fit for an attention-based architecture. A cautious interpretation is that, in this corrected implementation and with this small-batch regime, GroupNorm interacts favorably with the convolution-heavy encoder blocks. However, the margin is still modest enough that a full-dev rerun would be needed before making a strong claim.
+
+### 5.4 Experiment 3: Regularization Strength Through Dropout
+
+**Hypothesis.** Moderate dropout is normally expected to improve generalization, while excessive dropout should reduce both train and dev performance. Because the original dropout code was mathematically incorrect, this experiment was especially important after debugging.
+
+**Design.** The baseline used `dropout=0.1` and `dropout_char=0.05`. Two controlled variants were tested: `dropout=0.0`, `dropout_char=0.0`, and `dropout=0.2`, `dropout_char=0.1`. Optimizer, scheduler, normalization, seed, and all data settings were fixed.
+
+**Results.**
+
+| Dropout | Char dropout | Best dev F1 | Best dev EM | Final train F1 | Final dev F1 | F1 gap (train - dev) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `0.0` | `0.0` | `28.6822` | `21.5` | `20.8615` | `28.6822` | `-7.8207` |
+| `0.1` | `0.05` | `13.6660` | `5.0` | `7.7552` | `11.1724` | `-3.4171` |
+| `0.2` | `0.1` | `5.0913` | `2.5` | `5.1382` | `4.1584` | `0.9798` |
+
+**Analysis.** The dropout experiment produced the clearest result in the entire Stage 3 sweep. Removing dropout gave by far the best sampled dev performance, with best dev F1 increasing from `13.6660` to `28.6822` and best dev EM increasing from `5.0` to `21.5`. In contrast, increasing dropout to `0.2` / `0.1` caused a severe performance drop. This indicates that, at a training budget of only `3000` steps, the model is more limited by optimization than by overfitting. In other words, the baseline regularization appears too strong for such a short run, while the high-dropout setting clearly over-regularizes and prevents the model from fitting useful span patterns.
+
+The negative train-dev F1 gaps in the `0.0` and baseline settings should not be over-interpreted as "better dev than train" in a true statistical sense. They are a consequence of using only 25 random train batches and 25 dev batches for monitoring, so the estimates are noisy. The main robust finding is the ranking of the three dropout settings: no dropout performed best, moderate dropout was clearly weaker, and high dropout was worst.
+
+### 5.5 Overall Interpretation
+
+Across the three mechanisms, the corrected QANet implementation was most sensitive to regularization strength, moderately sensitive to normalization choice, and also meaningfully affected by optimizer/scheduler selection. The best configuration tested in Stage 3 was `dropout=0.0`, `dropout_char=0.0` on top of the Adam-plus-lambda baseline. The normalization experiment suggests that GroupNorm may provide an additional improvement, although this was not combined with the no-dropout setting in the current sweep. If more compute were available, the most useful follow-up would be to evaluate a combined configuration using Adam, lambda warmup, GroupNorm, and zero dropout on the full dev set.
 
 ## 6. Discussion
 
-The debugging process showed that small implementation details can completely change the behavior of a deep learning system. Some bugs were explicit runtime errors, such as invalid tensor shapes, missing scheduler registry entries, incorrect checkpoint keys, and calling `.backward()` on `loss.item()`. Others were more subtle: incorrect Adam bias correction, incorrect second-moment updates, wrong dropout scaling, and inconsistent logits/log-probability assumptions could let the code run while producing unstable or misleading training.
+The Stage 3 results reinforce the main lesson of the debugging phase: implementation correctness is necessary, but it is not sufficient for strong performance. Once the pipeline became stable, the remaining behavior depended strongly on optimization and regularization choices. This is exactly what should happen in a healthy experimental setup. Instead of fighting crashes, shape errors, and `nan` losses, the experiments revealed interpretable trade-offs between different deep learning mechanisms.
 
-The corrected implementation produced stable non-`nan` losses and non-zero F1/EM, indicating that the pipeline now satisfies the assignment's functional reliability requirement. The result is not yet an optimized SQuAD model, but it is a valid controlled platform for mechanism-oriented experiments.
+The strongest finding from the Stage 3 sweep is that the corrected model appears under-trained rather than over-regularized at `3000` steps. This explains why removing dropout helped substantially, while increasing dropout caused large drops in F1 and EM. It also helps explain why Adam with warmup beat SGD with a step schedule: under a tight training budget, faster and more adaptive optimization mattered more than conservative regularization.
 
-The experimental plan focuses on optimizer/scheduler behavior, normalization strategy, and dropout regularization. These experiments are appropriate because they vary one mechanism at a time while controlling the data, architecture, seed, and evaluation protocol. This allows the report to discuss causal effects rather than presenting unstructured hyperparameter tuning.
+The normalization result was more subtle. GroupNorm improved the sampled dev metrics over LayerNorm, but the improvement was not as large as the dropout effect. Therefore, GroupNorm is best described as a promising secondary enhancement rather than a definitive replacement. A full-dev evaluation and possibly a second seed would be needed before drawing a stronger conclusion.
+
+One important limitation is that all Stage 3 runs used only a 25-batch dev monitor. These results are still useful for controlled comparison, but they are not final benchmark numbers. For the final report, the safest wording is that Stage 3 identifies likely beneficial design choices, not that it fully resolves model selection.
 
 ## 7. Conclusion
 
-We repaired the QANet framework at both the pipeline and deep learning mechanism levels. The corrected code can preprocess data, train the model, evaluate validation performance, and save/load checkpoints. The most important fixes included restoring correct gradient computation, tensor shape handling, attention masking, loss/logit consistency, dropout scaling, normalization behavior, initialization formulas, optimizer updates, and learning-rate schedules.
+Stage 3 demonstrated that, after the major debugging fixes, the repository is not only executable but experimentally usable. The corrected QANet system can now support controlled ablations that isolate the effects of optimizers, schedulers, normalization, and dropout. This is important because it shows the codebase has been repaired to the point where meaningful empirical conclusions can be drawn.
 
-The final training evidence demonstrates that the model learns meaningful answer-span information, with monitored dev F1 reaching `21.5871` and monitored dev EM reaching `15.2500` in the 10,000-step run. The remaining train-dev gap suggests that future improvement should focus on training data size, regularization, and optimization settings rather than basic executability.
+Among the tested configurations, the baseline Adam-plus-lambda setup was stronger than the SGD-momentum-plus-step alternative, GroupNorm slightly outperformed LayerNorm, and dropout strength had the largest impact on performance. The strongest Stage 3 configuration was the no-dropout variant, which reached sampled best dev F1 `28.6822` and EM `21.5`, while the high-dropout condition performed worst. The most defensible overall conclusion is therefore that, in this short-budget setting, lighter regularization and adaptive optimization are more beneficial than stronger dropout or more conservative optimization schedules.
+
+For final submission, the Stage 3 section can confidently argue that the repaired model supports controlled mechanism-level analysis. The only caveat is that the reported numbers come from sampled dev monitoring rather than full-dev evaluation. If time permits, the best next step is to rerun the strongest configuration on the full dev set so that the final report can pair its qualitative conclusions with a more stable quantitative result.
 
 ## Appendix A: Suggested Final Checklist
 
